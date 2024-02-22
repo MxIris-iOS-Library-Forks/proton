@@ -46,6 +46,19 @@ class AttachmentContentView: UIView {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if touches.first != nil {
+            onContentViewTapped()
+        }
+        super.touchesBegan(touches, with: event)
+    }
+
+    func onContentViewTapped() {
+        guard attachment?.containerEditorView?.isEditable == true,
+            attachment?.selectOnTap == true else { return }
+         attachment?.setSelected(true)
+    }
 }
 
 /// Describes an image for which can be used in an `Attachment`
