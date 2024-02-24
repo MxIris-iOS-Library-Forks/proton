@@ -146,7 +146,7 @@ open class EditorView: UIView {
         get { editorViewContext.delegate }
     }
 
-    var scrollView: UIScrollView {
+    public var scrollView: UIScrollView {
         richTextView as UIScrollView
     }
 
@@ -1550,5 +1550,15 @@ extension EditorView: AsyncTaskSchedulerDelegate {
             .map {  $0.attachment.id }
 
         return previousRangeIDs.reversed()
+    }
+}
+
+extension EditorView {
+    open override var forFirstBaselineLayout: UIView {
+        richTextView
+    }
+
+    open override var forLastBaselineLayout: UIView {
+        richTextView
     }
 }
