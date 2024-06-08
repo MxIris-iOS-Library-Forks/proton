@@ -29,7 +29,7 @@ protocol TableCellDelegate: AnyObject {
     func cell(_ cell: TableCell, didAddContentView view: TableCellContentView)
     func cell(_ cell: TableCell, didRemoveContentView view: TableCellContentView?)
 
-    func cell(_ cell: TableCell, didChangeBounds bounds: CGRect)
+    func cell(_ cell: TableCell, didChangeBounds bounds: CGRect, oldBounds: CGRect)
     func cell(_ cell: TableCell, didReceiveFocusAt range: NSRange)
     func cell(_ cell: TableCell, didLoseFocusFrom range: NSRange)
     func cell(_ cell: TableCell, didTapAtLocation location: CGPoint, characterRange: NSRange?)
@@ -52,7 +52,14 @@ public class TableCell {
     /// Additional attributes that can be stored on Cell to identify various aspects like Header, Numbered etc.
     public var additionalAttributes: [String: Any] = [:]
 
-    public var attributedText: NSAttributedString?
+    private var _attributedText: NSAttributedString?
+    public var attributedText: NSAttributedString? {
+        get { contentView == nil ? _attributedText : editor?.attributedText }
+        set {
+            _attributedText = newValue
+            editor?.attributedText = newValue ?? NSAttributedString()
+        }
+    }
 
     /// Row indexes spanned by the cell. In case of a merged cell, this will contain all the rows= indexes which are merged.
     public internal(set) var rowSpan: [Int]
@@ -64,6 +71,12 @@ public class TableCell {
         didSet {
             guard oldValue != frame else { return }
             contentView?.frame = frame
+        }
+    }
+
+    public var isEditable: Bool = true {
+        didSet {
+            editor?.isEditable = isEditable
         }
     }
 
@@ -105,7 +118,8 @@ public class TableCell {
             contentView?.frame = frame
             //TODO: get rid of editorInitializer in favor of delegate callback for editor
             if let editor = contentView?.editor {
-                editor.attributedText = attributedText ?? editorInitializer().attributedText
+                editor.attributedText = _attributedText ?? editorInitializer().attributedText
+                editor.isEditable = isEditable
                 onEditorInitialized?(self, editor)
             }
             contentView?.applyStyle(style)
@@ -151,6 +165,11 @@ public class TableCell {
         self.initialHeight = initialHeight
     }
 
+    // Clear the content of the cell
+    public func clear() {
+        attributedText = NSAttributedString()
+    }
+
     /// Sets the focus in the `Editor` within the cell.
     public func setFocus() {
         contentView?.setFocus()
@@ -190,6 +209,7 @@ public class TableCell {
     }
 
     func prepareForReuse(_ contentView: TableCellContentView) {
+        contentView.isSelected = false
         contentView.editor.clear()
         contentView.editor.frame = CGRect(
             origin: .zero,
