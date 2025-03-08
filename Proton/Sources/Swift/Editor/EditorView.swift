@@ -150,12 +150,6 @@ open class EditorView: UIView {
         }
     }
 
-
-    // Holds `attributedText` until Editor move to a window
-    // Setting attributed text without Editor being fully ready
-    // causes issues with cached bounds that shows up when rotating the device.
-    private var pendingAttributedText: NSAttributedString?
-
     var editorContextDelegate: EditorViewDelegate? {
         get { editorViewContext.delegate }
     }
@@ -171,12 +165,6 @@ open class EditorView: UIView {
 
     /// Context for the current Editor
     public let editorViewContext: EditorViewContext
-
-    /// Returns if `attributedText` change is pending. `AttributedText` may not have been applied if the `EditorView` is not already on
-    /// `window` and `forceApplyAttributedText` is not set to `true`.
-    public var isAttributedTextPending: Bool {
-        pendingAttributedText != nil
-    }
 
     /// Enables asynchronous rendering of attachments.
     /// - Note:
@@ -252,7 +240,7 @@ open class EditorView: UIView {
     public var asyncTextResolvers: [AsyncTextResolving] = []
 
     /// Low-tech lock mechanism to know when `attributedText` is being set
-    private var isSettingAttributedText = false
+    private(set) var isSettingAttributedText = false
 
 
     // Making this a convenience init fails the test `testRendersWidthRangeAttachment` as the init of a class subclassed from
@@ -419,7 +407,6 @@ open class EditorView: UIView {
     /// An attachment is only counted as a single character. Content length does not include
     /// length of content within the Attachment that is hosting another `EditorView`.
     public var contentLength: Int {
-        guard pendingAttributedText == nil else { return attributedText.length }
         return richTextView.contentLength
     }
 
@@ -539,37 +526,23 @@ open class EditorView: UIView {
         }
     }
 
-    /// Forces setting attributed text in `EditorView` even if it is not
-    /// yet in view hierarchy.
-    /// - Note: This may result in misplaced `Attachment`s and is recommended to be set to `true` only in unit tests.
-    public var forceApplyAttributedText = false
-
     /// Text to be set in the `EditorView`
-    /// - Important: `attributedText` is not set for rendering in `EditorView` if the `EditorView` is not already in a `Window`. Value of `true`
-    /// for `isAttributedTextPending` confirms that the text has not yet been rendered even though it is set in the `EditorView`.
-    /// Notification of text being set can be observed by subscribing to `didSetAttributedText` in `EditorViewDelegate`.
-    /// Alternatively, `forceApplyAttributedText` may be set to `true` to always apply `attributedText` irrespective of `EditorView` being
-    /// in a `Window` or not.
     public var attributedText: NSAttributedString {
         get {
-            pendingAttributedText ?? richTextView.attributedText
+            richTextView.attributedText
         }
         set {
-            if forceApplyAttributedText == false && window == nil {
-                pendingAttributedText = newValue
-                return
-            }
+            isSettingAttributedText = true
             attachmentRenderingScheduler.cancel()
             renderedViewport = nil
             // Clear text before setting new value to avoid issues with formatting/layout when
             // editor is hosted in a scrollable container and content is set multiple times.
             richTextView.attributedText = NSAttributedString()
 
-            let isDeferred = pendingAttributedText != nil
-            pendingAttributedText = nil
+            let isDeferred = false
 
             AggregateEditorViewDelegate.editor(self, willSetAttributedText: newValue, isDeferred: isDeferred)
-            isSettingAttributedText = true
+            
             richTextView.attributedText = newValue
             isSettingAttributedText = false
             AggregateEditorViewDelegate.editor(self, didSetAttributedText: newValue, isDeferred: isDeferred)
@@ -584,22 +557,19 @@ open class EditorView: UIView {
         richTextView.text
     }
 
-    // Boolean flag to control first responder state
-    private var canBecomeFirstResponderFlag = true
-
     // Override canBecomeFirstResponder property
     open override var canBecomeFirstResponder: Bool {
-        return canBecomeFirstResponderFlag
+        return richTextView.canBecomeFirstResponder
     }
 
     // Method to disable becoming first responder
     func disableFirstResponder() {
-        canBecomeFirstResponderFlag = false
+        richTextView.disableFirstResponder()
     }
 
     // Method to enable becoming first responder
     func enableFirstResponder() {
-        canBecomeFirstResponderFlag = true
+        richTextView.enableFirstResponder()
     }
 
     public var selectedRange: NSRange {
@@ -874,9 +844,6 @@ open class EditorView: UIView {
     /// - IMPORTANT: Overriding implementations must call `super.didMoveToWindow()`
     open override func didMoveToWindow() {
         super.didMoveToWindow()
-        if let pendingAttributedText {
-            attributedText = pendingAttributedText
-        }
         let isReady = window != nil
         AggregateEditorViewDelegate.editor(self, isReady: isReady)
     }
@@ -907,6 +874,15 @@ open class EditorView: UIView {
     /// - Returns: true, if is first responder
     public func isFirstResponder() -> Bool {
         richTextView.isFirstResponder
+    }
+
+
+    /// Describes if one of the nested editor is first responder
+    /// - Returns: `true` if a nested editor is first responder.
+    /// - Note:
+    /// To check if current Editor itself is first responder, use `isFirstResponder()`.
+    public func containsFirstResponder() -> Bool {
+        nestedEditors.contains(where: { $0.isFirstResponder() })
     }
 
     /// Resets typing attributes back to default text color, font and paragraph style.
@@ -1137,7 +1113,7 @@ open class EditorView: UIView {
         if let range {
             selectedRange = range
         }
-        richTextView.becomeFirstResponder()
+        _ = richTextView.becomeFirstResponder()
     }
 
     /// Makes the `EditorView` lose focus.
@@ -1299,6 +1275,15 @@ open class EditorView: UIView {
     public func relayout(size: CGSize? = nil) {
         richTextView.recalculateHeight(size: size)
     }
+
+    /// Set the behavior for how Editor size would be updated based on content
+    /// - Parameter isAutogrowing: When `true`, uses custom calculation and constrains to size editor based on content. This is typically the case where
+    /// Editor is scrollable and needs to be confined to certain size using applied constraints. Use `false` in case Editor is itself non-scrollable but is hosted within
+    /// another scroll container. This will use iOS's internal logic for sizing the Editor based on the height of the content and is generally better performing.
+    public func setAutogrowing(_ isAutogrowing: Bool) {
+        richTextView.setAutogrowing(isAutogrowing)
+    }
+
 
     open override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         return richTextView.canPerformAction(action, withSender: sender)
@@ -1485,7 +1470,8 @@ extension EditorView: RichTextViewDelegate {
     }
 
     func richTextView(_ richTextView: RichTextView, selectedRangeChangedFrom oldRange: NSRange?, to newRange: NSRange?) {
-        textProcessor?.activeProcessors.forEach { $0.selectedRangeChanged(editor: self, oldRange: oldRange, newRange: newRange) }
+        let executableProcessors = textProcessor?.filteringExecutableOn(editor: self) ?? []
+        executableProcessors.forEach { $0.selectedRangeChanged(editor: self, oldRange: oldRange, newRange: newRange) }
     }
 
     func richTextView(_ richTextView: RichTextView, didTapAtLocation location: CGPoint, characterRange: NSRange?) {
@@ -1494,6 +1480,10 @@ extension EditorView: RichTextViewDelegate {
 
     func richTextView(_ richTextView: RichTextView, shouldSelectAttachmentOnBackspace attachment: Attachment) -> Bool? {
         AggregateEditorViewDelegate.editor(self, shouldSelectAttachmentOnBackspace: attachment)
+    }
+
+    func richTextView(_ richTextView: RichTextView, didChangeScrollEnabled isScrollEnabled: Bool) {
+        AggregateEditorViewDelegate.editor(self, didChangeScrollEnabled: isScrollEnabled)
     }
 }
 

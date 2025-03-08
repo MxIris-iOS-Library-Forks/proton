@@ -52,6 +52,32 @@ class TableViewTests: XCTestCase {
         window.rootViewController = viewController
     }
 
+    func testResolvesContainerScrollView() throws {
+        delegate.containerScrollView = nil
+
+        let viewport = CGRect(x: 0, y: 100, width: 350, height: 200)
+        delegate.viewport = viewport
+
+        let attachment = AttachmentGenerator.makeTableViewAttachment(
+            id: 1,
+            numRows: 20,
+            numColumns: 5,
+            initialRowHeight: 100
+        )
+        let tableView = attachment.view
+
+        tableView.delegate = delegate
+
+        editor.replaceCharacters(in: .zero, with: "Some text in editor")
+        editor.insertAttachment(in: editor.textEndRange, attachment: attachment)
+        editor.replaceCharacters(in: editor.textEndRange, with: "Text after grid")
+
+        viewController.render()
+
+        XCTAssertNil(delegate.containerScrollView)
+        XCTAssertEqual(attachment.view.containerScrollView, editor.scrollView)
+    }
+
     func testReusesTextFromPreRenderedCells() throws {
         delegate.containerScrollView = editor.scrollView
 
@@ -104,6 +130,20 @@ class TableViewTests: XCTestCase {
             {[0],[0]} {[0],[1]} {[0],[2]} {[0],[3]} {[1],[0]} {[1],[1]} {[1],[2]} {[1],[3]} {[2],[0]} {[2],[1]} {[2],[2]} {[2],[3]}
             """,
             try cellIDString(from: tableView.cellsInViewport, filter: filter))
+    }
+
+    func testIsCellSelectionEnabled() {
+        let attachment = AttachmentGenerator.makeTableViewAttachment(
+            id: 1,
+            numRows: 20,
+            numColumns: 5,
+            initialRowHeight: 100
+        )
+        let tableView = attachment.view.tableView
+        XCTAssertFalse(tableView.gestureRecognizers?.contains{ $0.name == tableView.selectionGestureRecognizerName } ?? false)
+
+        tableView.isCellSelectionEnabled = true
+        XCTAssertTrue(tableView.gestureRecognizers?.contains{ $0.name == tableView.selectionGestureRecognizerName } ?? false)
     }
 
     func FIXME_testChangesBoundsOfCell() {

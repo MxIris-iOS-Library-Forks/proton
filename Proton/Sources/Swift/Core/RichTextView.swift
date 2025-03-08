@@ -36,6 +36,21 @@ class RichTextView: AutogrowingTextView {
 
     private var delegateOverrides = [GestureRecognizerDelegateOverride]()
 
+    private(set) var ignoreSelectedRangeChangeCallback = false
+
+    private var _canBecomeFirstResponder = true
+    override var canBecomeFirstResponder: Bool {
+        return _canBecomeFirstResponder
+    }
+
+    func disableFirstResponder() {
+        _canBecomeFirstResponder = false
+    }
+
+    func enableFirstResponder() {
+        _canBecomeFirstResponder = true
+    }
+
     var preserveBlockAttachmentNewline: PreserveBlockAttachmentNewline = .none {
         didSet {
             richTextStorage.preserveNewlineBeforeBlock = false
@@ -190,6 +205,21 @@ class RichTextView: AutogrowingTextView {
         draw(CGRect(origin: .zero, size: contentSize))
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let didBecomeFirstResponder = super.becomeFirstResponder()
+        if didBecomeFirstResponder {
+            context?.selectedTextView = self
+            context?.activeTextView = self
+        }
+        return didBecomeFirstResponder
+    }
+
+    func updateSelectedRangeIgnoringCallback(_ selectedRange: NSRange) {
+        ignoreSelectedRangeChangeCallback = true
+        self.selectedRange = selectedRange
+        ignoreSelectedRangeChangeCallback = false
+    }
+
     override var selectedTextRange: UITextRange? {
         didSet{
             let old = oldValue?.toNSRange(in: self)
@@ -226,6 +256,13 @@ class RichTextView: AutogrowingTextView {
 
     var nestedTextViews: [RichTextView] {
         getNestedEditors(for: self)
+    }
+
+    override var isScrollEnabled: Bool {
+        didSet {
+            guard isScrollEnabled != oldValue else { return }
+            richTextViewDelegate?.richTextView(self, didChangeScrollEnabled: isScrollEnabled)
+        }
     }
 
     override public func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

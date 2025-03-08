@@ -38,11 +38,23 @@ public protocol TableCellLifeCycleObserver: AnyObject {
     func tableView(_ tableView: TableView, didRemoveCellFromViewport cell: TableCell)
 }
 
+
+public enum ViewportBorderDisplay {
+    case hidden
+    case visible(color: UIColor, borderWidth: CGFloat)
+}
+
 /// An object capable of handing `TableView` events
 public protocol TableViewDelegate: AnyObject {
     var containerScrollView: UIScrollView? { get }
 
     var viewport: CGRect? { get }
+
+    /// Governs whether resolved viewport is displayed
+    /// - Note: This may be used for debugging purposes.
+    /// - Important: It is responsibility of consumer of the API to ensure that this is not displayed in app if not intended to. i.e. display of viewport does not
+    /// check for DEBUG flags and would be displayed based on value provided.
+    var resolvedViewportBorderDisplay: ViewportBorderDisplay { get }
 
     /// Invoked when `EditorView` within the cell receives focus
     /// - Parameters:
@@ -145,6 +157,10 @@ public protocol TableViewDelegate: AnyObject {
     func tableView(_ tableView: TableView, didRemoveCellFromViewport cell: TableCell)
 }
 
+public extension TableViewDelegate {
+    var resolvedViewportBorderDisplay: ViewportBorderDisplay { .hidden }
+}
+
 /// A view that provides a tabular structure where each cell is an `EditorView`.
 /// Since the cells contains an `EditorView` in itself, it is capable of hosting any attachment that `EditorView` can host
 /// including another `TableView` as an attachment.
@@ -164,6 +180,12 @@ public class TableView: UIView {
     private var observation: NSKeyValueObservation?
 
     private let repository = TableCellRepository()
+
+    private weak var _containerScrollView: UIScrollView? {
+        didSet {
+            _containerScrollView != nil ? setupScrollObserver() : removeScrollObserver()
+        }
+    }
 
     private lazy var columnRightBorderView: UIView = {
         makeSelectionBorderView()
@@ -207,6 +229,12 @@ public class TableView: UIView {
                 removeColumnResizingHandles()
             }
         }
+    }
+
+    /// Determines if cell selection using 2-finger drag gesture is enabled
+    public var isCellSelectionEnabled: Bool {
+        get { tableView.isCellSelectionEnabled }
+        set { tableView.isCellSelectionEnabled = newValue }
     }
 
     /// Bounds observer for the `TableView`. Typically, this will be the `Attachment` that hosts the `TableView`.
@@ -294,9 +322,9 @@ public class TableView: UIView {
     ///   - config: Configuration for `TableView`
     ///   - cellEditorInitializer: Custom initializer for `EditorView` within `TableCell`. This will also be used when creating new cells as a
     ///   return of adding new row or column, or cells being split.
-    public convenience init(config: GridConfiguration, cellEditorInitializer: GridCell.EditorInitializer? = nil) {
+    public convenience init(config: GridConfiguration, cellEditorInitializer: GridCell.EditorInitializer? = nil, isCellSelectionEnabled: Bool = false) {
         let tableView = TableContentView(config: config, editorInitializer: cellEditorInitializer)
-        self.init(config: config, tableView: tableView)
+        self.init(config: config, tableView: tableView, isCellSelectionEnabled: isCellSelectionEnabled)
     }
 
     /// Initializes `TableView` using the provided configuration.
@@ -307,12 +335,12 @@ public class TableView: UIView {
     ///   return of adding new row or column, or cells being split.
     ///   - Important:
     ///   Care must be taken that the number of cells are correct per the configuration provided, failing which the `TableView` rendering may be broken.
-    public convenience init(config: GridConfiguration, cells: [TableCell], cellEditorInitializer: TableCell.EditorInitializer? = nil) {
+    public convenience init(config: GridConfiguration, cells: [TableCell], cellEditorInitializer: TableCell.EditorInitializer? = nil, isCellSelectionEnabled: Bool = false) {
         let tableView = TableContentView(config: config, cells: cells, editorInitializer: cellEditorInitializer)
-        self.init(config: config, tableView: tableView)
+        self.init(config: config, tableView: tableView, isCellSelectionEnabled: isCellSelectionEnabled)
     }
 
-    private init(config: GridConfiguration, tableView: TableContentView) {
+    private init(config: GridConfiguration, tableView: TableContentView, isCellSelectionEnabled: Bool ) {
         self.tableView = tableView
         let boundsShadowColors = [
             config.boundsLimitShadowColors.primary.cgColor,
@@ -325,7 +353,7 @@ public class TableView: UIView {
         self.config = config
         super.init(frame: .zero)
         self.leadingShadowConstraint = leadingShadowView.leadingAnchor.constraint(equalTo: self.leadingAnchor)
-
+        self.isCellSelectionEnabled = isCellSelectionEnabled
         setup()
     }
 
@@ -337,6 +365,40 @@ public class TableView: UIView {
         didSet {
             tableView.backgroundColor = backgroundColor
         }
+    }
+
+    public override func didMoveToWindow() {
+        guard window != nil else { return }
+
+        // Only try to auto resolve container scrollview, if not already provided by the delegate
+        guard self.containerScrollView == nil else { return }
+
+        // If table has the Editor which is scrollable, use that as container for viewport
+        let containerEditorView = self.containerAttachment?.containerEditorView
+        if let scrollView = containerEditorView?.scrollView, scrollView.isScrollEnabled {
+            _containerScrollView = scrollView
+            return
+        }
+
+        // Else, find the next available scrollview up the hierarchy
+        if let scrollView = getScrollContainer(from: containerEditorView) {
+            _containerScrollView = scrollView
+        }
+
+        // If there's still none, default to container editor scrollview
+        // This would typically be the case where the Editor starts off as non-scrollable but becomes scrollable
+        // as the content overflows in which case this should resolve correctly.
+        if _containerScrollView == nil {
+            _containerScrollView = containerEditorView?.scrollView
+        }
+    }
+
+    private func getScrollContainer(from view: UIView?) -> UIScrollView? {
+        guard view != nil else { return nil }
+        guard let scrollView = view as? UIScrollView else {
+            return getScrollContainer(from: view?.superview)
+        }
+        return scrollView
     }
 
     /// Maintains the scroll lock on the cell passed in if the  original rect ends up moving as a result of cells getting rendered above this rect position
@@ -393,7 +455,7 @@ public class TableView: UIView {
     }
 
     private func setupScrollObserver() {
-        observation = delegate?.containerScrollView?.observe(\.bounds, options: [.new, .old]) { [weak self] container, change in
+        observation = containerScrollView?.observe(\.bounds, options: [.new, .old]) { [weak self] container, change in
             self?.viewportChanged()
         }
     }
@@ -406,8 +468,12 @@ public class TableView: UIView {
         removeScrollObserver()
     }
 
+    private var retainedCells = Set<TableCell>()
+
     var cellsInViewport: [TableCell] = [] {
         didSet {
+            reclaimReleasedCells(cellsInViewport)
+
             guard oldValue != cellsInViewport else { return }
 
             let oldCells = Set(oldValue)
@@ -415,20 +481,22 @@ public class TableView: UIView {
             let toGenerate = newCells.subtracting(oldCells)
             let toReclaim = oldCells.subtracting(newCells)
 
-            // Required to reset the focus to an editor within viewport.
-            // In absence of this check, if the editor having focus gets reclaimed,
-            // the focus moves to root editor which may cause the content to be scrolled
-            // out to end of the root editor.
-            let needsFocusChange = toReclaim.contains(where: { $0.editor?.isFirstResponder() == true })
-            if needsFocusChange {
-                containerAttachment?.containerEditorView?.rootEditor.endEditing(true)
-            }
             toReclaim.forEach { [weak self] cell in
-                self?.repository.enqueue(cell: cell)
+                // Ignore reclaiming the cell if these are retained
+                // Cell having focus is always retained and released on lost focus
+                if cell.isRetained == false {
+                    self?.repository.enqueue(cell: cell)
+                } else {
+                    self?.retainedCells.insert(cell)
+                }
             }
 
-            toGenerate.forEach { [weak self] in
-                self?.repository.dequeue(for: $0)
+            toGenerate.forEach { [weak self] cell in
+                // Ignore generating the cell if it is already retained. The retained cell is not reclaimed, hence need not be regenerated.
+                // In absence of this check, there may be cases where the retained cell gets duplicated
+                if cell.isRetained == false {
+                    self?.repository.dequeue(for: cell)
+                }
             }
         }
     }
@@ -438,7 +506,7 @@ public class TableView: UIView {
               // ensure editor is not hidden e.g. inside an Expand in collapsed state
               attachmentContentView.attachment?.containerEditorView?.isHidden == false,
               tableView.bounds != .zero,
-              let containerScrollView = delegate?.containerScrollView,
+              let containerScrollView = self.containerScrollView,
               let rootEditorView = containerAttachment?.containerEditorView?.rootEditor else {
             cellsInViewport = []
             return
@@ -460,8 +528,10 @@ public class TableView: UIView {
         // Convert the visible rectangle back to the nestedView's coordinate space
         let visibleRectOfNestedView = rootEditorView.convert(visibleRectOfNestedViewInScrollView, from: containerScrollView)
 
-        // Uncomment following line to show the resolved viewport
-//         Utility.drawRect(rect: visibleRectOfNestedView, color: .red, in: rootEditorView, name: "viewport")
+        if let viewportBorder = delegate?.resolvedViewportBorderDisplay,
+           case let ViewportBorderDisplay.visible(color, borderWidth) = viewportBorder {
+            Utility.drawRect(rect: visibleRectOfNestedView, color: color, borderWidth: borderWidth, in: rootEditorView, name: "viewport")
+        }
 
         let adjustedViewport = visibleRectOfNestedView.offsetBy(dx: tableView.bounds.minX, dy: tableView.bounds.minY)
 
@@ -482,6 +552,17 @@ public class TableView: UIView {
             $0.frame != .zero
             && $0.frame.offsetBy(dx: adjustedAttachmentViewport.origin.x, dy: adjustedAttachmentViewport.origin.y)
             .intersects(adjustedViewport) }
+    }
+
+    private func reclaimReleasedCells(_ cellsInViewport: [TableCell]) {
+        retainedCells
+            .filter { cellsInViewport.contains($0) == false }
+            .forEach {
+                if $0.isRetained == false {
+                    self.repository.enqueue(cell: $0)
+                    retainedCells.remove($0)
+                }
+            }
     }
 
     func cellBelow(_ cell: TableCell) -> TableCell? {
@@ -804,7 +885,6 @@ public class TableView: UIView {
 
 extension TableView: UIScrollViewDelegate {
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        cellsInViewport.first { $0.editor?.isFirstResponder() == true }?.editor?.resignFocus()
         resetShadows()
         viewportChanged()
     }
@@ -812,7 +892,7 @@ extension TableView: UIScrollViewDelegate {
 
 extension TableView: TableContentViewDelegate {
     var containerScrollView: UIScrollView? {
-        delegate?.containerScrollView
+        delegate?.containerScrollView ?? _containerScrollView
     }
 
     var viewport: CGRect? {
